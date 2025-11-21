@@ -251,23 +251,47 @@ class TurnCoordinator:
         stream_callback=None
     ) -> List[Dict[str, str]]:
         """
-        Execute one full round of the Council (all speakers get a turn).
-
-        Args:
-            messages: Current conversation history
-            system_prompt: System instruction for this round
-            stream_callback: Function to handle chunks (needs to handle speaker context)
-
-        Returns:
-            List of responses (one per speaker), with metadata
+        Execute one full round of the Council.
+        
+        Stage 2.1: Supports @Mentions to target specific speakers.
+        Default: All speakers (Round Robin).
         """
         responses = []
+        
+        # 1. Determine Target Speakers
+        # Check the last user message for @mentions
+        last_user_msg = messages[-1]["content"].lower() if messages else ""
+        target_speakers = []
+        
+        # Check for explicit @Council override (All speak)
+        if "@council" in last_user_msg:
+            # Use the current queue order (rotation happens below if we used get_next, 
+            # but here we just grab the list)
+            target_speakers = list(self.speaker_queue)
+        else:
+            # Check for specific mentions
+            found_mentions = []
+            # iterating over healthy speakers to find mentions
+            for ai_id in self.speaker_queue:
+                if f"@{ai_id}" in last_user_msg:
+                    found_mentions.append(ai_id)
+            
+            if found_mentions:
+                target_speakers = found_mentions
+            else:
+                # Default: All Speak (Round Robin sequence)
+                # To maintain the rotation effect, we rotate the queue once per round?
+                # Or just iterate the current order. 
+                # For MVP behavior (everyone speaks), we just list them.
+                target_speakers = list(self.speaker_queue)
+                # Optional: Rotate the main queue so next time the order changes?
+                # self.speaker_queue.rotate(-1) 
 
-        for _ in range(len(self.speaker_queue)):
-            speaker_id = await self.get_next_speaker()
-            if not speaker_id:
-                break
+        logger.info(f"Target Speakers for this round: {target_speakers}")
 
+        for speaker_id in target_speakers:
+            # We do not use get_next_speaker() here because we have a specific list.
+            
             logger.info(f"Turn: {speaker_id}")
             
             # Wrap callback to include speaker ID context
@@ -319,12 +343,12 @@ class TurnCoordinator:
                     "content": response_text,
                     "success": True
                 })
-                # Add AI response to message history for next speaker
-                # Inject Speaker Identity so the next AI knows who spoke
+                # Add AI response to message history for next speaker (or for next round)
+                # Even if other AIs didn't speak, they will see this in the history next time they are called.
                 identity_content = f"[{speaker_id.capitalize()}]: {response_text}"
                 messages.append({"role": "assistant", "content": identity_content})
             else:
-                # All retries failed - skip this speaker for now (Stage 2.0 MVP)
+                # All retries failed
                 logger.warning(f"Skipping {speaker_id} (unavailable)")
                 responses.append({
                     "speaker": speaker_id,
